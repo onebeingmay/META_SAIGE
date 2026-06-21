@@ -1,5 +1,6 @@
 # Meta-SAIGE for Rare Variant Meta-Analysis
 This repo is a patch of the original META_SAIGE tool with the following changes:
+
 Bug fixes
 
 1. Duplicate-SNPID dedup (6 sites in Get_META_Data_OneSet + the two ancestry-specific functions) — added data1 <- data1[!duplicated(data1$SNPID), ] after data1$IDX1 <- 1:nrow(data1). Stops the merge() from expanding when a cohort has duplicate marker IDs (the replacement has N rows, data has M crash). Order matters: IDX1 is assigned first so it stays aligned to the LD-matrix rows.
