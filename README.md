@@ -1,4 +1,23 @@
 # Meta-SAIGE for Rare Variant Meta-Analysis
+This repo is a patch of the original META_SAIGE tool with the following changes:
+Bug fixes
+
+1. Duplicate-SNPID dedup (6 sites in Get_META_Data_OneSet + the two ancestry-specific functions) — added data1 <- data1[!duplicated(data1$SNPID), ] after data1$IDX1 <- 1:nrow(data1). Stops the merge() from expanding when a cohort has duplicate marker IDs (the replacement has N rows, data has M crash). Order matters: IDX1 is assigned first so it stays aligned to the LD-matrix rows.
+
+2. idx_flip remap (6 sites) — idx_flip = data2$IDX1[id2] → idx_flip = match(data2$IDX1[id2], IDX1). The flip indices must address the subsetted submatrix SMat[IDX1,IDX1], not the original. Fixes wrong allele-flips / subscript out of bounds in multi-cohort runs.
+
+3. Single-marker LD guard (load_cohort) — length(readLines(...)) > 1 → > 0. A one-variant gene has a single LD line; the old guard sent it to the empty (0×0) branch while it still had a marker, crashing downstream. The existing is.double() branch already handles the 1×1 case.
+
+4. Union "max-coverage" mask (Run_MetaSAIGE) — the shared per-gene meta object is now built from the union of all annotation categories across masks, not just the mask with the most underscores. A disjoint mask (e.g. synonymous alongside a pLoF hierarchy) no longer silently returns "No variants left after filtering."
+
+New features
+
+1. SKAT & Burden columns — added Pval_SKAT (ρ=0) and Pval_Burden (ρ=1), pulled from the per-ρ p-values the SKAT-O hybrid already computes. Pval (SKAT-O) is unchanged.
+
+2. Singleton burden rows — new Run_Singleton_Burden() + a per-annotation loop emitting <anno>_singleton rows: a burden of meta-singletons (MAC_ALL == 1), computed from the shared meta object and independent of col_co. Mirrors REMETA's singleton column (--burden-singleton-def across).
+
+
+
 
 ## Description
 Meta-SAIGE is a meta-analysis tool for rare variant association studies. It is designed to combine the results of multiple cohorts and perform a meta-analysis. Meta-SAIGE is built on top of SAIGE/SAIGE-GENE+ and can be used to perform meta-analysis on the summary statistics of SAIGE and LD matrix from SAIGE-GENE+.
