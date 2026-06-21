@@ -136,8 +136,12 @@ load_cohort <- function(gwas_summary, cohort, gene, SNPinfo, gene_file_prefix, t
 		stringsAsFactors = FALSE)   
 	}
 
-	# Load and prepare the sparse matrix for LD information
-	if (file.exists(paste0(gene_file_prefix[cohort], gene, '.txt')) && length(readLines(paste0(gene_file_prefix[cohort], gene, '.txt'))) > 1) {
+	# Load and prepare the sparse matrix for LD information.
+	# NOTE: must be > 0, not > 1. A single-marker gene has exactly one LD line
+	# ("0 0 <var>"); the > 1 guard wrongly sent it to the empty branch (0x0 matrix)
+	# while the gene still had a marker, causing "subscript out of bounds" downstream.
+	# The is.double() branch below already handles the resulting 1x1 matrix.
+	if (file.exists(paste0(gene_file_prefix[cohort], gene, '.txt')) && length(readLines(paste0(gene_file_prefix[cohort], gene, '.txt'))) > 0) {
 			sparseMList = read.table(paste0(gene_file_prefix[cohort], gene, '.txt'), header = FALSE)
 			sparseGtG = Matrix:::sparseMatrix(i = as.vector(sparseMList[,1]), j = as.vector(sparseMList[,2]), x = as.vector(sparseMList[,3]), index1= FALSE)
 			sparseGtG <- sparseGtG[merged$Index, merged$Index]
@@ -258,6 +262,8 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
     res_RV <- c()
     res_URV <- c()
     res_P_col <- c()
+    res_SKAT <- c()     # pure SKAT  (rho = 0)
+    res_Burden <- c()   # pure Burden (rho = 1)
 
 
     # Begin analysis for each gene
@@ -294,7 +300,13 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
         max_mask_df <- max_mask_df[max_mask_df$underscore_count == max_count,]
         max_mask_anno = as.character(max_mask_df$Var1[1]) ; max_mask_maf = as.numeric(max_mask_df$Var2[1])
         max_group = paste0(max_mask_anno, '_', max_mask_maf)
-        max_anno_vec = unlist(strsplit(max_mask_anno, '_'))
+        # Build the shared "max coverage" variant set from the UNION of every annotation
+        # category across ALL masks (not just the mask with the most underscores).
+        # Each individual mask later subsets this set (Run_Meta_OneSet), and a correlation
+        # submatrix is exact, so the union must be a superset of every mask -- otherwise a
+        # disjoint mask (e.g. 'synonymous' alongside a pLoF hierarchy) silently yields
+        # "No variants left after filtering".
+        max_anno_vec = unique(unlist(strsplit(as.character(annotation), '_')))
         max_groupfile_df_gene_anno = groupfile_df_gene[groupfile_df_gene$anno %in% max_anno_vec,]
 
         # Run meta-analysis helper with the highest coverage mask
@@ -336,10 +348,23 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
                                         res_P <- append(res_P, Pval_Adj)
                                         tmp_P_cauchy <- append(tmp_P_cauchy, out_adj$p.value)
 
+                                        # Per-rho p-values: rho==0 is SKAT, rho==1 is Burden.
+                                        rho_vec <- out_adj$param$rho ; pve <- as.vector(out_adj$param$p.val.each)
+                                        if (!is.null(rho_vec) && length(rho_vec) == length(pve)){
+                                                skat_p   <- if (any(rho_vec == 0)) pve[which(rho_vec == 0)[1]] else NA
+                                                burden_p <- if (any(rho_vec == 1)) pve[which(rho_vec == 1)[1]] else NA
+                                        } else {
+                                                # Fallback: grid is ascending rho=0 (SKAT) .. rho=1 (Burden)
+                                                skat_p <- pve[1] ; burden_p <- pve[length(pve)]
+                                        }
                                 }else{
                                         res_P <- append(res_P, out_adj$p.value)
                                         tmp_P_cauchy <- append(tmp_P_cauchy, out_adj$p.value)
+                                        # Single-variant set: SKAT, Burden and SKAT-O coincide
+                                        skat_p <- out_adj$p.value ; burden_p <- out_adj$p.value
                                 }
+                                res_SKAT <- append(res_SKAT, skat_p)
+                                res_Burden <- append(res_Burden, burden_p)
 
                                 res_MAC <- append(res_MAC, out_adj$MAC_all)
                                 res_RV <- append(res_RV, out_adj$RV)
@@ -351,17 +376,43 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
                         })
 
                 }
-          
+
+                # --- Singleton burden test (REMETA-style 'singleton' column) ---
+                # One burden row per annotation mask, over meta-singletons
+                # (MAC_ALL == 1; matches REMETA's default --burden-singleton-def across).
+                # Computed from the shared Max_OUT_Meta and INDEPENDENT of col_co, so
+                # none of the mask results above change. Not fed into the Cauchy combine.
+                if(!is.null(groupfile)){
+                        for(anno_s in unique(as.character(annotation))){
+                                try({
+                                        anno_s_vec = unlist(strsplit(anno_s, '_'))
+                                        gdf_s = groupfile_df_gene[groupfile_df_gene$anno %in% anno_s_vec,]
+                                        sing = Run_Singleton_Burden(Max_OUT_Meta, groupfile = gdf_s)
+                                        res_chr <- append(res_chr, chr)
+                                        res_gene <- append(res_gene, gene)
+                                        res_group <- append(res_group, paste0(anno_s, '_singleton'))
+                                        res_P <- append(res_P, sing$p.value)
+                                        res_SKAT <- append(res_SKAT, NA)
+                                        res_Burden <- append(res_Burden, sing$p.value)
+                                        res_MAC <- append(res_MAC, sing$MAC)
+                                        res_RV <- append(res_RV, sing$n)
+                                        res_URV <- append(res_URV, sing$n)
+                                        res_P_col <- append(res_P_col, NA)
+                                }, silent = TRUE)
+                        }
+                }
+
 		})
 
         # Add Cauchy combined test result
         res_chr <- append(res_chr, chr) ; res_gene <- append(res_gene, gene) ; res_group <- append(res_group, 'Cauchy')
         res_P <- append(res_P, CCT(tmp_P_cauchy)) ; res_MAC <- append(res_MAC, NA) ; res_RV <- append(res_RV, NA) ; res_URV <- append(res_URV, NA) ; res_P_col <- append(res_P_col, NA)
+        res_SKAT <- append(res_SKAT, NA) ; res_Burden <- append(res_Burden, NA)
 
         # Write intermediate results if verbose mode is enabled
         if(verbose == 'TRUE'){
-                out <- data.frame(res_chr, res_gene, res_group, res_P, res_MAC, res_RV, res_URV, res_P_col)
-                colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
+                out <- data.frame(res_chr, res_gene, res_group, res_P, res_SKAT, res_Burden, res_MAC, res_RV, res_URV, res_P_col)
+                colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'Pval_SKAT', 'Pval_Burden', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
 
                 write.table(out, output_path, sep = '\t', row.names = F, col.names = T, quote = F)
         }
@@ -369,11 +420,44 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
     }
 
     # Create final output dataframe
-    out <- data.frame(res_chr, res_gene, res_group, res_P, res_MAC, res_RV, res_URV, res_P_col)
-    colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
+    out <- data.frame(res_chr, res_gene, res_group, res_P, res_SKAT, res_Burden, res_MAC, res_RV, res_URV, res_P_col)
+    colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'Pval_SKAT', 'Pval_Burden', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
 
     # Write to output file
     write.table(out, output_path, sep = '\t', row.names = F, col.names = T, quote = F)
+}
+
+
+# Singleton burden test (matches REMETA's 'singleton' mask, --burden-singleton-def across).
+# Collapses every meta-singleton variant (MAC_ALL == 1) within an annotation into a single
+# burden unit and returns its 1-df chi-square p-value, computed from the shared max-coverage
+# meta object. Mirrors the ultra-rare collapse math (Collapse_Matrix = a row of 1s):
+#   S_C = 1' S_w ;  Phi_C = 1' Phi_w1 1 - (1' Phi_w2)^2 ;  p = pchisq(S_C^2 / Phi_C, df = 1)
+# Independent of col_co, so it does not alter any other mask's result.
+Run_Singleton_Burden <- function(OUT_Meta, groupfile = NULL){
+        obj = OUT_Meta$obj
+        if(is.null(obj) || is.null(obj$Info_ALL) || nrow(obj$Info_ALL) == 0){
+                return(list(p.value = NA, n = 0, MAC = 0))
+        }
+        if(!is.null(groupfile)){
+                idx = which(obj$Info_ALL$SNPID %in% groupfile$var)
+        } else {
+                idx = seq_len(nrow(obj$Info_ALL))
+        }
+        # meta-singletons: total minor allele count == 1 across cohorts
+        idx = idx[which(obj$Info_ALL$MAC_ALL[idx] == 1)]
+        n_singleton = length(idx)
+        if(n_singleton == 0){
+                return(list(p.value = NA, n = 0, MAC = 0))
+        }
+        S_C   = sum(OUT_Meta$S_w[idx])
+        Phi_C = sum(as.matrix(OUT_Meta$Phi_w1[idx, idx])) - sum(OUT_Meta$Phi_w2[idx])^2
+        if(is.na(Phi_C) || Phi_C <= 0){
+                return(list(p.value = NA, n = n_singleton, MAC = n_singleton))
+        }
+        test.stat = S_C^2 / Phi_C
+        p.value = pchisq(test.stat, df = 1, lower.tail = FALSE)
+        return(list(p.value = p.value, n = n_singleton, MAC = n_singleton))
 }
 
 
@@ -620,6 +704,7 @@ Get_AncestrySpecific_META_Data_OneSet_NoCol <- function(SMat.list_tmp, Info.list
                         
                         data1<-Info.list_tmp[[i]]
                         data1$IDX1<-1:nrow(data1)
+                        data1<-data1[!duplicated(data1$SNPID), ]
                         data2.org<-merge(Info_ALL, data1, by.x="SNPID", by.y="SNPID", all.x=TRUE)
                                 
                         #data2.org1<<-data2.org
@@ -644,7 +729,7 @@ Get_AncestrySpecific_META_Data_OneSet_NoCol <- function(SMat.list_tmp, Info.list
                                 n1 = n.vec[i]
                                 
                                 MAC = data2$MAC[IDX]
-                                idx_flip = data2$IDX1[id2]
+                                idx_flip = match(data2$IDX1[id2], IDX1)
                                 OUT_Flip = Flip_Genotypes(SMat.list_tmp[[i]][IDX1,IDX1], MAC, n1, idx_flip)
                                 
                                 SMat_1 = OUT_Flip$SMat
@@ -716,12 +801,13 @@ data2 <<- data2
                         
                         data1<-Info.list_tmp[[i]]
                         data1$IDX1<-1:nrow(data1)
+                        data1<-data1[!duplicated(data1$SNPID), ]
                         data2.org<-merge(Info_ALL, data1, by.x="SNPID", by.y="SNPID", all.x=TRUE)
-                                
+
                         #data2.org1<<-data2.org
                         data2<-data2.org[order(data2.org$IDX),]
 
-                        # IDX: SNPs in SNP_ALL, IDX1: index in each cohort			
+                        # IDX: SNPs in SNP_ALL, IDX1: index in each cohort
                         IDX<-which(!is.na(data2$IDX1))
                         IDX1<-data2$IDX1[IDX]
 
@@ -731,26 +817,26 @@ data2 <<- data2
                                 Info_ALL$MajorAllele_ALL[id1] = data2$MajorAllele[id1]
                                 Info_ALL$MinorAllele_ALL[id1] = data2$MinorAllele[id1]
                         }
-                        
+
                         # Flip the genotypes, major alleles are different
                         compare<-Info_ALL$MajorAllele_ALL == data2$MajorAllele
                         id2 = which(!compare)
                         if(length(id2)> 0){
                                 data2$S[id2] = -data2$S[id2]
                                 n1 = n.vec[i]
-                                
+
                                 MAC = data2$MAC[IDX]
-                                idx_flip = data2$IDX1[id2]
+                                idx_flip = match(data2$IDX1[id2], IDX1)
                                 OUT_Flip = Flip_Genotypes(SMat.list_tmp[[i]][IDX1,IDX1], MAC, n1, idx_flip)
-                                
+
                                 SMat_1 = OUT_Flip$SMat
-                                data2$MAC[IDX] = OUT_Flip$MAC 	
+                                data2$MAC[IDX] = OUT_Flip$MAC
                         } else {
-                        
+
                                 SMat_1 = SMat.list_tmp[[i]][IDX1,IDX1]
-                        
+
                         }
-                        
+
                         # Update Info
                         Info_ALL$S_ALL[IDX] = Info_ALL$S_ALL[IDX] + data2$S[IDX]
                         Info_ALL$Var_ALL_Adj[IDX] = Info_ALL$Var_ALL_Adj[IDX] + data2$Var[IDX]
@@ -811,6 +897,7 @@ Get_AncestrySpecific_META_Data_OneSet <- function(SMat.list_tmp, Info.list_tmp, 
                         
                         data1<-Info.list_tmp[[i]]
                         data1$IDX1<-1:nrow(data1)
+                        data1<-data1[!duplicated(data1$SNPID), ]
                         data2.org<-merge(Info_ALL, data1, by.x="SNPID", by.y="SNPID", all.x=TRUE)
                                 
                         #data2.org1<<-data2.org
@@ -835,7 +922,7 @@ Get_AncestrySpecific_META_Data_OneSet <- function(SMat.list_tmp, Info.list_tmp, 
                                 n1 = n.vec[i]
                                 
                                 MAC = data2$MAC[IDX]
-                                idx_flip = data2$IDX1[id2]
+                                idx_flip = match(data2$IDX1[id2], IDX1)
                                 OUT_Flip = Flip_Genotypes(SMat.list_tmp[[i]][IDX1,IDX1], MAC, n1, idx_flip)
                                 
                                 SMat_1 = OUT_Flip$SMat
@@ -908,6 +995,7 @@ Get_AncestrySpecific_META_Data_OneSet <- function(SMat.list_tmp, Info.list_tmp, 
                         
                         data1<-Info.list_tmp[[i]]
                         data1$IDX1<-1:nrow(data1)
+                        data1<-data1[!duplicated(data1$SNPID), ]
                         data2.org<-merge(Info_ALL, data1, by.x="SNPID", by.y="SNPID", all.x=TRUE)
                                 
                         #data2.org1<<-data2.org
@@ -932,7 +1020,7 @@ Get_AncestrySpecific_META_Data_OneSet <- function(SMat.list_tmp, Info.list_tmp, 
                                 n1 = n.vec[i]
                                 
                                 MAC = data2$MAC[IDX]
-                                idx_flip = data2$IDX1[id2]
+                                idx_flip = match(data2$IDX1[id2], IDX1)
                                 OUT_Flip = Flip_Genotypes(SMat.list_tmp[[i]][IDX1,IDX1], MAC, n1, idx_flip)
                                 
                                 SMat_1 = OUT_Flip$SMat
@@ -1017,6 +1105,7 @@ Get_META_Data_OneSet<-function(SMat.list, Info.list, n.vec, IsExistSNV.vec,  n.c
 
                         data1<-Info.list[[i]]
                         data1$IDX1<-1:nrow(data1)
+                        data1<-data1[!duplicated(data1$SNPID), ]
                         data2.org<-merge(Info_ALL, data1, by.x="SNPID", by.y="SNPID", all.x=TRUE)
 
                         #data2.org1<<-data2.org
@@ -1041,7 +1130,7 @@ Get_META_Data_OneSet<-function(SMat.list, Info.list, n.vec, IsExistSNV.vec,  n.c
                                 n1 = n.vec[i]
 
                                 MAC = data2$MAC[IDX]
-                                idx_flip = data2$IDX1[id2]
+                                idx_flip = match(data2$IDX1[id2], IDX1)
                                 OUT_Flip = Flip_Genotypes(SMat.list[[i]][IDX1,IDX1], MAC, n1, idx_flip)
 
                                 SMat_1 = OUT_Flip$SMat
@@ -1123,6 +1212,7 @@ Get_META_Data_OneSet<-function(SMat.list, Info.list, n.vec, IsExistSNV.vec,  n.c
 
                         data1<-Info.list[[i]]
                         data1$IDX1<-1:nrow(data1)
+                        data1<-data1[!duplicated(data1$SNPID), ]
                         data2.org<-merge(Info_ALL, data1, by.x="SNPID", by.y="SNPID", all.x=TRUE)
 
                         #data2.org1<<-data2.org
@@ -1147,7 +1237,7 @@ Get_META_Data_OneSet<-function(SMat.list, Info.list, n.vec, IsExistSNV.vec,  n.c
                                 n1 = n.vec[i]
 
                                 MAC = data2$MAC[IDX]
-                                idx_flip = data2$IDX1[id2]
+                                idx_flip = match(data2$IDX1[id2], IDX1)
                                 OUT_Flip = Flip_Genotypes(SMat.list[[i]][IDX1,IDX1], MAC, n1, idx_flip)
 
                                 SMat_1 = OUT_Flip$SMat
