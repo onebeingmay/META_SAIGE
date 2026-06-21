@@ -55,7 +55,7 @@ library(remotes)
 install_github('leelabsg/SKAT')
 
 # Install MetaSAIGE
-install_github('git@github.com:leelabsg/SAIGE_META.git')
+install_github('git@github.com:onebeingmay/SAIGE_META.git')
 library(MetaSAIGE)
 ```
 
