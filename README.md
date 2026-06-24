@@ -14,8 +14,8 @@ Bug fixes
 New features
 
 1. SKAT & Burden columns — added Pval_SKAT (ρ=0) and Pval_Burden (ρ=1), pulled from the per-ρ p-values the SKAT-O hybrid already computes. Pval (SKAT-O) is unchanged.
-
-2. Singleton burden rows — new Run_Singleton_Burden() + a per-annotation loop emitting <anno>_singleton rows: a burden of meta-singletons (MAC_ALL == 1), computed from the shared meta object and independent of col_co. Mirrors REMETA's singleton column (--burden-singleton-def across).
+2. BETA_Burden and SE_Burden columns. Mirrors SAIGE-GENE+ output
+3. Singleton burden rows — new Run_Singleton_Burden() + a per-annotation loop emitting <anno>_singleton rows: a burden of meta-singletons (MAC_ALL == 1), computed from the shared meta object and independent of col_co. Mirrors REMETA's singleton column (--burden-singleton-def across).
 
 
 
