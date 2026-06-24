@@ -262,8 +262,10 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
     res_RV <- c()
     res_URV <- c()
     res_P_col <- c()
-    res_SKAT <- c()     # pure SKAT  (rho = 0)
-    res_Burden <- c()   # pure Burden (rho = 1)
+    res_SKAT <- c()        # pure SKAT  (rho = 0)
+    res_Burden <- c()      # pure Burden (rho = 1)
+    res_BETA_Burden <- c() # burden effect size  = (1'S)/(1'Phi 1)
+    res_SE_Burden <- c()   # burden standard error = 1/sqrt(1'Phi 1)
 
 
     # Begin analysis for each gene
@@ -365,6 +367,8 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
                                 }
                                 res_SKAT <- append(res_SKAT, skat_p)
                                 res_Burden <- append(res_Burden, burden_p)
+                                res_BETA_Burden <- append(res_BETA_Burden, if (is.null(out_adj$BETA_Burden)) NA else out_adj$BETA_Burden)
+                                res_SE_Burden <- append(res_SE_Burden, if (is.null(out_adj$SE_Burden)) NA else out_adj$SE_Burden)
 
                                 res_MAC <- append(res_MAC, out_adj$MAC_all)
                                 res_RV <- append(res_RV, out_adj$RV)
@@ -394,6 +398,8 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
                                         res_P <- append(res_P, sing$p.value)
                                         res_SKAT <- append(res_SKAT, NA)
                                         res_Burden <- append(res_Burden, sing$p.value)
+                                        res_BETA_Burden <- append(res_BETA_Burden, sing$BETA)
+                                        res_SE_Burden <- append(res_SE_Burden, sing$SE)
                                         res_MAC <- append(res_MAC, sing$MAC)
                                         res_RV <- append(res_RV, sing$n)
                                         res_URV <- append(res_URV, sing$n)
@@ -408,11 +414,12 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
         res_chr <- append(res_chr, chr) ; res_gene <- append(res_gene, gene) ; res_group <- append(res_group, 'Cauchy')
         res_P <- append(res_P, CCT(tmp_P_cauchy)) ; res_MAC <- append(res_MAC, NA) ; res_RV <- append(res_RV, NA) ; res_URV <- append(res_URV, NA) ; res_P_col <- append(res_P_col, NA)
         res_SKAT <- append(res_SKAT, NA) ; res_Burden <- append(res_Burden, NA)
+        res_BETA_Burden <- append(res_BETA_Burden, NA) ; res_SE_Burden <- append(res_SE_Burden, NA)
 
         # Write intermediate results if verbose mode is enabled
         if(verbose == 'TRUE'){
-                out <- data.frame(res_chr, res_gene, res_group, res_P, res_SKAT, res_Burden, res_MAC, res_RV, res_URV, res_P_col)
-                colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'Pval_SKAT', 'Pval_Burden', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
+                out <- data.frame(res_chr, res_gene, res_group, res_P, res_SKAT, res_Burden, res_BETA_Burden, res_SE_Burden, res_MAC, res_RV, res_URV, res_P_col)
+                colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'Pval_SKAT', 'Pval_Burden', 'BETA_Burden', 'SE_Burden', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
 
                 write.table(out, output_path, sep = '\t', row.names = F, col.names = T, quote = F)
         }
@@ -420,8 +427,8 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
     }
 
     # Create final output dataframe
-    out <- data.frame(res_chr, res_gene, res_group, res_P, res_SKAT, res_Burden, res_MAC, res_RV, res_URV, res_P_col)
-    colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'Pval_SKAT', 'Pval_Burden', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
+    out <- data.frame(res_chr, res_gene, res_group, res_P, res_SKAT, res_Burden, res_BETA_Burden, res_SE_Burden, res_MAC, res_RV, res_URV, res_P_col)
+    colnames(out)<- c('CHR', 'GENE', 'Group', 'Pval', 'Pval_SKAT', 'Pval_Burden', 'BETA_Burden', 'SE_Burden', 'MAC', '#Rare Variants', '#Ultra Rare Variants', 'P-value of Collapsed Ultra Rare')
 
     # Write to output file
     write.table(out, output_path, sep = '\t', row.names = F, col.names = T, quote = F)
@@ -437,7 +444,7 @@ Run_MetaSAIGE <- function(n.cohorts, chr, gwas_path, info_path, gene_file_prefix
 Run_Singleton_Burden <- function(OUT_Meta, groupfile = NULL){
         obj = OUT_Meta$obj
         if(is.null(obj) || is.null(obj$Info_ALL) || nrow(obj$Info_ALL) == 0){
-                return(list(p.value = NA, n = 0, MAC = 0))
+                return(list(p.value = NA, n = 0, MAC = 0, BETA = NA, SE = NA))
         }
         if(!is.null(groupfile)){
                 idx = which(obj$Info_ALL$SNPID %in% groupfile$var)
@@ -448,16 +455,17 @@ Run_Singleton_Burden <- function(OUT_Meta, groupfile = NULL){
         idx = idx[which(obj$Info_ALL$MAC_ALL[idx] == 1)]
         n_singleton = length(idx)
         if(n_singleton == 0){
-                return(list(p.value = NA, n = 0, MAC = 0))
+                return(list(p.value = NA, n = 0, MAC = 0, BETA = NA, SE = NA))
         }
         S_C   = sum(OUT_Meta$S_w[idx])
         Phi_C = sum(as.matrix(OUT_Meta$Phi_w1[idx, idx])) - sum(OUT_Meta$Phi_w2[idx])^2
         if(is.na(Phi_C) || Phi_C <= 0){
-                return(list(p.value = NA, n = n_singleton, MAC = n_singleton))
+                return(list(p.value = NA, n = n_singleton, MAC = n_singleton, BETA = NA, SE = NA))
         }
         test.stat = S_C^2 / Phi_C
         p.value = pchisq(test.stat, df = 1, lower.tail = FALSE)
-        return(list(p.value = p.value, n = n_singleton, MAC = n_singleton))
+        return(list(p.value = p.value, n = n_singleton, MAC = n_singleton,
+                    BETA = S_C / Phi_C, SE = sqrt(1 / Phi_C)))
 }
 
 
@@ -1500,6 +1508,15 @@ Run_Meta_OneSet<-function(OUT_Meta, n.vec, Col_Cut, r.all= c(0, 0.1^2, 0.2^2, 0.
 		
         }
         out_Meta$nSNP = length(S_M_C)
+        # Burden (rho=1) effect size, consistent with Pval_Burden (same collapsed
+        # score/variance): BETA = (1'S) / (1'Phi 1), SE = 1 / sqrt(1'Phi 1).
+        V_burden = sum(as.matrix(Phi_C)) ; S_burden = sum(S_M_C)
+        if(!is.na(V_burden) && V_burden > 0){
+                out_Meta$BETA_Burden = S_burden / V_burden
+                out_Meta$SE_Burden = sqrt(1 / V_burden)
+        } else {
+                out_Meta$BETA_Burden = NA ; out_Meta$SE_Burden = NA
+        }
         if(IsGet_Info_ALL){
                 out_Meta$MAC_all = sum(MAC)
                 out_Meta$RV = nSNP
